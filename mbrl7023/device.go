@@ -115,6 +115,8 @@ func (m *MBRL7023) SetAuthentication(id, password string) error {
 		println(line)
 		if line == "OK" {
 			break
+		} else if strings.HasPrefix(line, "FAIL ") {
+			return fmt.Errorf(line)
 		}
 	}
 
@@ -126,6 +128,8 @@ func (m *MBRL7023) SetAuthentication(id, password string) error {
 		println(line)
 		if line == "OK" {
 			break
+		} else if strings.HasPrefix(line, "FAIL ") {
+			return fmt.Errorf(line)
 		}
 	}
 	return nil
@@ -220,7 +224,6 @@ func (m *MBRL7023) GetIPv6LinkLocalAddr(macAddr string) string {
 	}
 }
 
-
 func (m *MBRL7023) SetChannel(channel uint8) error {
 	var line, remain string
 	// result := map[string]string{}
@@ -240,11 +243,10 @@ func (m *MBRL7023) SetPanID(panID uint16) error {
 	for {
 		line, remain = m.readLine(remain)
 		if strings.HasPrefix(line, "OK") {
-			return nil	
+			return nil
 		}
 	}
 }
-
 
 func (m *MBRL7023) ExecutePANAAuth(ipv6Address string) error {
 	var line, remain string
@@ -252,7 +254,7 @@ func (m *MBRL7023) ExecutePANAAuth(ipv6Address string) error {
 	for {
 		line, remain = m.readLine(remain)
 		if strings.HasPrefix(line, "OK") {
-			return nil	
+			return nil
 		}
 	}
 }
@@ -270,3 +272,59 @@ func (m *MBRL7023) WaitForPANAAuth() error {
 	}
 }
 
+func (m *MBRL7023) GetInstantPower(ipv6Addr string) (uint32, error) {
+	var line, remain string
+	m.port.Write([]byte(fmt.Sprintf("SKSENDTO 1 %s 0E1A 1 0 %04X ", ipv6Addr, len(getInstantPowerBytes))))
+	m.port.Write(getInstantPowerBytes)
+	// m.readLine("") // skip echoback
+	for {
+		println("wait response")
+		line, remain = m.readLine(remain)
+		println(line)
+		if strings.Contains(line, "ERXUDP") {
+			// println("erxudp")
+			// rx := strings.Split(line, "ERXUDP")
+			elements := strings.Split(strings.TrimSpace(line), " ")
+			println(elements)
+			if len(elements) < 10 {
+				continue
+			}
+			udpBody := elements[9]
+			if len(udpBody) < 36 {
+				continue
+			}
+			seoj := udpBody[8 : 8+6]
+			println("seoj: ", seoj)
+			esv := udpBody[20 : 20+2]
+			println("esv: ", esv)
+			if seoj == "028801" && esv == "72" {
+				epc := udpBody[24 : 24+2]
+				println("epc: ", epc)
+				if epc == "E7" {
+					power, err := strconv.ParseUint(udpBody[len(udpBody)-8:], 16, 32)
+					if err != nil {
+						return 0, err
+					}
+					return uint32(power), nil
+				}
+			}
+		}
+	}
+	for {
+		line, remain = m.readLine(remain)
+		if strings.HasPrefix("ERXUDP", line) {
+			elements := strings.Split(strings.TrimSpace(line), " ")
+			udpBody := elements[9]
+			seoj := udpBody[8 : 8+6]
+			esv := udpBody[20 : 20+2]
+			if seoj == "028801" && esv == "72" {
+				power, err := strconv.ParseUint(udpBody[len(udpBody)-8-1:], 16, 32)
+				if err != nil {
+					return 0, err
+				}
+				return uint32(power), nil
+			}
+		}
+	}
+
+}

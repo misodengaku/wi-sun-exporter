@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/misodengaku/wi-sun-exporter/mbrl7023"
 )
@@ -55,4 +56,13 @@ func main() {
 		panic(err)
 	}
 	println("joined")
+
+	for {
+		power, err := device.GetInstantPower(channelScanResult.IPv6Address)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("power: %d[W]\n", power)
+		time.Sleep(30 * time.Second)
+	}
 }
