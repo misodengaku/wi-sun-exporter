@@ -46,4 +46,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	device.SetChannel(channelScanResult.Channel)
+	device.SetPanID(channelScanResult.PanID)
+	device.ExecutePANAAuth(channelScanResult.IPv6Address)
+	err = device.WaitForPANAAuth()
+	if err != nil {
+		panic(err)
+	}
+	println("joined")
 }

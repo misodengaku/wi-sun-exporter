@@ -32,6 +32,8 @@ type ChannelInfo struct {
 	LQI         uint8  `json:"lqi"`
 }
 
+var getInstantPowerBytes = []byte{0x10, 0x81, 0x00, 0x01, 0x05, 0xFF, 0x01, 0x02, 0x88, 0x01, 0x62, 0x01, 0xE7, 0x00}
+
 func (m *MBRL7023) Init(ctx context.Context, devicePath string) error {
 	port, err := serial.Open(devicePath, &serial.Mode{
 		BaudRate: 115200,
@@ -217,3 +219,54 @@ func (m *MBRL7023) GetIPv6LinkLocalAddr(macAddr string) string {
 		}
 	}
 }
+
+
+func (m *MBRL7023) SetChannel(channel uint8) error {
+	var line, remain string
+	// result := map[string]string{}
+	m.port.Write([]byte(fmt.Sprintf("SKSREG S2 %02X\r\n", channel)))
+	for {
+		line, remain = m.readLine(remain)
+		if strings.HasPrefix(line, "OK") {
+			return nil
+		}
+	}
+}
+
+func (m *MBRL7023) SetPanID(panID uint16) error {
+	var line, remain string
+	// result := map[string]string{}
+	m.port.Write([]byte(fmt.Sprintf("SKSREG S3 %04X\r\n", panID)))
+	for {
+		line, remain = m.readLine(remain)
+		if strings.HasPrefix(line, "OK") {
+			return nil	
+		}
+	}
+}
+
+
+func (m *MBRL7023) ExecutePANAAuth(ipv6Address string) error {
+	var line, remain string
+	m.port.Write([]byte(fmt.Sprintf("SKJOIN %s\r\n", ipv6Address)))
+	for {
+		line, remain = m.readLine(remain)
+		if strings.HasPrefix(line, "OK") {
+			return nil	
+		}
+	}
+}
+
+func (m *MBRL7023) WaitForPANAAuth() error {
+	var line, remain string
+	for {
+		line, remain = m.readLine(remain)
+		if strings.HasPrefix(line, "EVENT 24") {
+			return fmt.Errorf("failed to authentication")
+		} else if strings.HasPrefix(line, "EVENT 25") {
+			// success
+			return nil
+		}
+	}
+}
+
