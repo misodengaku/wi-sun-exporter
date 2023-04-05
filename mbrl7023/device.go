@@ -2,7 +2,6 @@ package mbrl7023
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,6 +21,17 @@ type MBRL7023 struct {
 	Temperature float64
 }
 
+type ChannelInfo struct {
+	MACAddress  string `json:"mac_address"`
+	IPv6Address string `json:"ipv6_address"`
+	Channel     uint8  `json:"channel"`
+	ChannelPage uint8  `json:"channel_page"`
+	PairID      uint32 `json:"pair_id"`
+	PanID       uint16 `json:"pan_id"`
+	Side        uint32 `json:"side"` // wakaran
+	LQI         uint8  `json:"lqi"`
+}
+
 func (m *MBRL7023) Init(ctx context.Context, devicePath string) error {
 	port, err := serial.Open(devicePath, &serial.Mode{
 		BaudRate: 115200,
@@ -31,46 +41,49 @@ func (m *MBRL7023) Init(ctx context.Context, devicePath string) error {
 	}
 	m.port = port
 
-	go func() {
-		var lineBuffer string
+	// go func() {
+	// 	var lineBuffer string
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				buffer := make([]byte, 128)
-				n, err := u.port.Read(buffer)
-				if err != nil {
-					panic(err)
-				}
-				if n == 0 {
-					continue
-				}
-				lineBuffer += strings.Trim(string(buffer), "\x00")
+	// 	for {
+	// 		select {
+	// 		case <-ctx.Done():
+	// 			return
+	// 		default:
+	// 			buffer := make([]byte, 128)
+	// 			n, err := m.port.Read(buffer)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 			if n == 0 {
+	// 				continue
+	// 			}
+	// 			lineBuffer += strings.Trim(string(buffer), "\x00")
 
-				lines := strings.Split(lineBuffer, "\r\n")
-				if len(lines) == 1 {
-					continue
-				}
-				// for _, line := range lines[:len(lines)-1] {
-				// 	line = strings.TrimSuffix(line, "\r\n")
-				// 	line = strings.TrimPrefix(line, "OK ")
-				// 	u.parseLine(line)
-				// }
-				lineBuffer = lines[len(lines)-1]
-			}
-		}
-	}()
+	// 			lines := strings.Split(lineBuffer, "\r\n")
+	// 			if len(lines) == 1 {
+	// 				continue
+	// 			}
+	// 			// for _, line := range lines[:len(lines)-1] {
+	// 			// 	line = strings.TrimSuffix(line, "\r\n")
+	// 			// 	line = strings.TrimPrefix(line, "OK ")
+	// 			// 	u.parseLine(line)
+	// 			// }
+	// 			lineBuffer = lines[len(lines)-1]
+	// 		}
+	// 	}
+	// }()
 	return nil
 }
 
-func (m *MBRL7023) readLine(buffer string) (line, remain string) {
-	var lineBuffer string
-	lineBuffer += buffer
+func (m *MBRL7023) readLine(lineBuffer string) (line, remain string) {
+	lines := strings.SplitN(lineBuffer, "\r\n", 2)
+	if len(lines) == 2 {
+		line = lines[0]
+		remain = lines[1]
+		return
+	}
 	for {
-
-		buffer := make([]byte, 128)
+		buffer := make([]byte, 256)
 		n, err := m.port.Read(buffer)
 		if err != nil {
 			panic(err)
@@ -94,17 +107,21 @@ func (m *MBRL7023) readLine(buffer string) (line, remain string) {
 
 func (m *MBRL7023) SetAuthentication(id, password string) error {
 	var line, remain string
+	m.port.Write([]byte(fmt.Sprintf("SKSETPWD C %s\r\n", password)))
 	for {
-		m.port.Write([]byte(fmt.Sprintf("SKSETPWD C %s\r\n", password)))
 		line, remain = m.readLine(remain)
+		println(line)
 		if line == "OK" {
 			break
 		}
 	}
 
+	remain = ""
+
+	m.port.Write([]byte(fmt.Sprintf("SKSETRBID %s\r\n", id)))
 	for {
-		m.port.Write([]byte(fmt.Sprintf("SKSETRBID %s\r\n", id)))
 		line, remain = m.readLine(remain)
+		println(line)
 		if line == "OK" {
 			break
 		}
@@ -113,33 +130,15 @@ func (m *MBRL7023) SetAuthentication(id, password string) error {
 }
 
 func (m *MBRL7023) parseLine(line string) error {
-	var err error
+	// var err error
 	elems := strings.Split(line, ",")
 	for _, elem := range elems {
 		kv := strings.Split(elem, "=")
 		switch kv[0] {
-		case "CO2":
-			u.CO2, err = strconv.Atoi(kv[1])
-			if err != nil {
-				return err
-			}
-			u.Timestamp = time.Now()
-		case "HUM":
-			u.Humidity, err = strconv.ParseFloat(kv[1], 64)
-			if err != nil {
-				return err
-			}
-			u.Timestamp = time.Now()
-		case "TMP":
-			u.Temperature, err = strconv.ParseFloat(kv[1], 64)
-			if err != nil {
-				return err
-			}
-			u.Timestamp = time.Now()
 		case "ID":
-			u.ID = kv[1]
+			m.ID = kv[1]
 		case "VER":
-			u.Version = kv[1]
+			m.Version = kv[1]
 		}
 	}
 	return nil
@@ -155,48 +154,66 @@ func (m *MBRL7023) readResult() (result string, success bool) {
 	return
 }
 
-func (m *MBRL7023) GetDeviceID() string {
-	u.port.Write([]byte("ID?\r\n"))
-	result, ok := u.readResult()
-	if !ok {
-		panic(result)
+func (m *MBRL7023) ChannelScan(scanDurationSec int) (ChannelInfo, error) {
+	var line, remain string
+	result := map[string]string{}
+	m.port.Write([]byte(fmt.Sprintf("SKSCAN 2 FFFFFFFF %d 0\r\n", scanDurationSec)))
+	for {
+		line, remain = m.readLine(remain)
+		println("line:", line, "remain: ", remain)
+		if strings.HasPrefix(line, "EVENT 22") {
+			break
+		} else if strings.HasPrefix(line, "  ") {
+			r := strings.SplitN(line, ":", 2)
+			result[strings.TrimSpace(r[0])] = r[1]
+		}
 	}
-	return result
-}
 
-func (m *MBRL7023) GetFirmwareVersion() string {
-	u.port.ResetInputBuffer()
-	u.port.Write([]byte("VER?\r\n"))
-	result, ok := u.readResult()
-	if !ok {
-		panic(result)
+	fmt.Printf("%#v\n", result)
+	chInfo := ChannelInfo{}
+	chInfo.MACAddress = result["Addr"]
+	chInfo.IPv6Address = m.GetIPv6LinkLocalAddr(result["Addr"])
+	v, err := strconv.ParseUint(result["Channel"], 16, 8)
+	if err != nil {
+		return ChannelInfo{}, err
 	}
-	return result
-}
-
-func (m *MBRL7023) StartMeasurement() string {
-	u.port.ResetInputBuffer()
-	u.port.Write([]byte("STA\r\n"))
-	result, ok := u.readResult()
-	if !ok {
-		panic(result)
+	chInfo.Channel = uint8(v)
+	v, err = strconv.ParseUint(result["Channel Page"], 16, 8)
+	if err != nil {
+		return ChannelInfo{}, err
 	}
-	return result
-}
-
-func (m *MBRL7023) StopMeasurement() {
-	u.port.Write([]byte("STP\r\n"))
-}
-
-func (m *MBRL7023) GetFRCValue() {
-	u.port.Write([]byte("FRC?\r\n"))
-}
-
-func (m *MBRL7023) setFRCValue(frcValue int) error {
-	if frcValue < 400 || frcValue > 2000 {
-		return errors.New("frcValue is out of range")
+	chInfo.ChannelPage = uint8(v)
+	v, err = strconv.ParseUint(result["Pan ID"], 16, 16)
+	if err != nil {
+		return ChannelInfo{}, err
 	}
-	cmd := fmt.Sprintf("FRC=%d\r\n", frcValue)
-	u.port.Write([]byte(cmd))
-	return nil
+	chInfo.PanID = uint16(v)
+	v, err = strconv.ParseUint(result["PairID"], 16, 32)
+	if err != nil {
+		return ChannelInfo{}, err
+	}
+	chInfo.PairID = uint32(v)
+	v, err = strconv.ParseUint(result["Side"], 16, 32)
+	if err != nil {
+		return ChannelInfo{}, err
+	}
+	chInfo.Side = uint32(v)
+	v, err = strconv.ParseUint(result["LQI"], 16, 8)
+	if err != nil {
+		return ChannelInfo{}, err
+	}
+	chInfo.LQI = uint8(v)
+	return chInfo, nil
+}
+
+func (m *MBRL7023) GetIPv6LinkLocalAddr(macAddr string) string {
+	var line, remain string
+	// result := map[string]string{}
+	m.port.Write([]byte(fmt.Sprintf("SKLL64 %s\r\n", macAddr)))
+	for {
+		line, remain = m.readLine(remain)
+		if !strings.HasPrefix(line, "SKLL64") {
+			return line
+		}
+	}
 }
