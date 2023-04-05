@@ -1,0 +1,13 @@
+[Unit]
+Description=udco2s-exporter-docker
+Requires=docker.service network.target
+After=docker.service network.target
+[Service]
+TimeoutStartSec=0
+Restart=always
+ExecStartPre=-/usr/bin/docker rm udco2s-exporter
+ExecStartPre=-/usr/bin/docker pull misodengaku/udco2s-exporter
+ExecStart=-/usr/bin/docker run -e TTY=/dev/ttyUDCO2S --device=/dev/ttyUDCO2S -p 127.0.0.1:9999:9999 --name udco2s-exporter misodengaku/udco2s-exporter
+ExecStop=-/usr/bin/docker kill udco2s-exporter
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty",ATTRS{idVendor}=="04d8",ATTRS{idProduct}=="e95a",ENV{ID_SERIAL}="IO_DATA_UD-CO2S",SYMLINK+="ttyUDCO2S",MODE="0777"

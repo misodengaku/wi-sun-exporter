@@ -1,0 +1,15 @@
+[Unit]
+Description=udco2s-exporter
+After=prometheus.service network.target
+
+[Service]
+WorkingDirectory=/opt/
+Type=simple
+Environment=LISTEN_ADDR=0.0.0.0:9999
+Environment=TTY=/dev/ttyUDCO2S
+ExecStart=/opt/udco2s-exporter
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
