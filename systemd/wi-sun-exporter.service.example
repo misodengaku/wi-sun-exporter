@@ -1,0 +1,17 @@
+[Unit]
+Description=wi-sun-exporter
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/
+Type=simple
+Environment=LISTEN_ADDR=0.0.0.0:9000
+Environment=TTY=/dev/ttyS1
+Environment=ID=000000XXXXXXXXXXXXXXXXXXXXXXXXXX
+Environment=PASSWORD=XXXXXXXXXXXX
+ExecStart=/opt/wi-sun-exporter
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
