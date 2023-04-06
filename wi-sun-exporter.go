@@ -16,6 +16,8 @@ import (
 type Config struct {
 	PromHTTPListenAddr string `json:"prometheus_listen_addr"`
 	TTY                string `json:"tty"`
+	ID                 string `json:"id"`
+	Password           string `json:"password"`
 }
 
 func main() {
@@ -29,18 +31,18 @@ func main() {
 	if config.TTY == "" {
 		panic("please specify TTY environment variable")
 	}
+	config.ID = os.Getenv("ID")
+	if config.ID == "" {
+		panic("please specify ID environment variable")
+	}
+	config.Password = os.Getenv("PASSWORD")
+	if config.Password == "" {
+		panic("please specify PASSWORD environment variable")
+	}
 
-	co2Gauge := promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "udco2s_co2_concentration",
-		Help: "CO2 concentration",
-	})
-	humGauge := promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "udco2s_humidity",
-		Help: "Humidity",
-	})
-	tempGauge := promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "udco2s_temperature",
-		Help: "Temperature",
+	powerGauge := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "route_b_instant_power",
+		Help: "Instantaneous power value",
 	})
 
 	go func() {
@@ -54,13 +56,30 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	device.StartMeasurement()
+	log.Println("connecting...")
+	err = device.SetAuthentication(config.ID, config.Password)
+	if err != nil {
+		panic(err)
+	}
+	channelScanResult, err := device.ChannelScan(6)
+	if err != nil {
+		panic(err)
+	}
+	device.SetChannel(channelScanResult.Channel)
+	device.SetPanID(channelScanResult.PanID)
+	device.ExecutePANAAuth(channelScanResult.IPv6Address)
+	err = device.WaitForPANAAuth()
+	if err != nil {
+		panic(err)
+	}
 	log.Println("wi-sun-exporter is running")
 
 	for {
-		co2Gauge.Set(float64(device.CO2))
-		humGauge.Set(device.Humidity)
-		tempGauge.Set(device.Temperature)
-		time.Sleep(1 * time.Second)
+		power, err := device.GetInstantPower(channelScanResult.IPv6Address)
+		if err != nil {
+			panic(err)
+		}
+		powerGauge.Set(float64(power))
+		time.Sleep(15 * time.Second)
 	}
 }
