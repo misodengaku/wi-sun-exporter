@@ -52,7 +52,7 @@ func main() {
 	}()
 
 	device := mbrl7023.MBRL7023{}
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 120*time.Second)
 	err = device.Init(config.TTY)
 	if err != nil {
 		panic(err)
