@@ -51,35 +51,42 @@ func main() {
 		log.Println(http.ListenAndServe(config.PromHTTPListenAddr, nil))
 	}()
 
-	device := mbrl7023.MBRL7023{}
-	err = device.Init(context.Background(), config.TTY)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("connecting...")
-	err = device.SetAuthentication(config.ID, config.Password)
-	if err != nil {
-		panic(err)
-	}
-	channelScanResult, err := device.ChannelScan(6)
-	if err != nil {
-		panic(err)
-	}
-	device.SetChannel(channelScanResult.Channel)
-	device.SetPanID(channelScanResult.PanID)
-	device.ExecutePANAAuth(channelScanResult.IPv6Address)
-	err = device.WaitForPANAAuth()
-	if err != nil {
-		panic(err)
-	}
-	log.Println("wi-sun-exporter is running")
-
 	for {
-		power, err := device.GetInstantPower(channelScanResult.IPv6Address)
+
+		device := mbrl7023.MBRL7023{}
+		ctx, _ := context.WithTimeout(context.Background(), 120*time.Second)
+		err = device.Init(config.TTY)
 		if err != nil {
 			panic(err)
 		}
-		powerGauge.Set(float64(power))
-		time.Sleep(15 * time.Second)
+		log.Println("connecting...")
+		err = device.SetAuthentication(ctx, config.ID, config.Password)
+		if err != nil {
+			panic(err)
+		}
+		channelScanResult, err := device.ChannelScan(ctx, 6)
+		if err != nil {
+			panic(err)
+		}
+		device.SetChannel(ctx, channelScanResult.Channel)
+		device.SetPanID(ctx, channelScanResult.PanID)
+		device.ExecutePANAAuth(ctx, channelScanResult.IPv6Address)
+		err = device.WaitForPANAAuth(ctx)
+		if err != nil {
+			panic(err)
+		}
+		log.Println("wi-sun-exporter is running")
+
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			power, err := device.GetInstantPower(ctx, channelScanResult.IPv6Address)
+			if err != nil {
+				break
+			}
+			cancel()
+			powerGauge.Set(float64(power))
+			time.Sleep(15 * time.Second)
+		}
+		log.Println("timeout. restart from authentication...")
 	}
 }

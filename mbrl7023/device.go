@@ -33,8 +33,9 @@ type ChannelInfo struct {
 }
 
 var getInstantPowerBytes = []byte{0x10, 0x81, 0x00, 0x01, 0x05, 0xFF, 0x01, 0x02, 0x88, 0x01, 0x62, 0x01, 0xE7, 0x00}
+var ErrTimeout = fmt.Errorf("timeout")
 
-func (m *MBRL7023) Init(ctx context.Context, devicePath string) error {
+func (m *MBRL7023) Init(devicePath string) error {
 	port, err := serial.Open(devicePath, &serial.Mode{
 		BaudRate: 115200,
 	})
@@ -42,42 +43,12 @@ func (m *MBRL7023) Init(ctx context.Context, devicePath string) error {
 		return err
 	}
 	m.port = port
+	m.port.SetReadTimeout(250 * time.Millisecond)
 
-	// go func() {
-	// 	var lineBuffer string
-
-	// 	for {
-	// 		select {
-	// 		case <-ctx.Done():
-	// 			return
-	// 		default:
-	// 			buffer := make([]byte, 128)
-	// 			n, err := m.port.Read(buffer)
-	// 			if err != nil {
-	// 				panic(err)
-	// 			}
-	// 			if n == 0 {
-	// 				continue
-	// 			}
-	// 			lineBuffer += strings.Trim(string(buffer), "\x00")
-
-	// 			lines := strings.Split(lineBuffer, "\r\n")
-	// 			if len(lines) == 1 {
-	// 				continue
-	// 			}
-	// 			// for _, line := range lines[:len(lines)-1] {
-	// 			// 	line = strings.TrimSuffix(line, "\r\n")
-	// 			// 	line = strings.TrimPrefix(line, "OK ")
-	// 			// 	u.parseLine(line)
-	// 			// }
-	// 			lineBuffer = lines[len(lines)-1]
-	// 		}
-	// 	}
-	// }()
 	return nil
 }
 
-func (m *MBRL7023) readLine(lineBuffer string) (line, remain string) {
+func (m *MBRL7023) readLine(ctx context.Context, lineBuffer string) (line, remain string, _err error) {
 	lines := strings.SplitN(lineBuffer, "\r\n", 2)
 	if len(lines) == 2 {
 		line = lines[0]
@@ -90,8 +61,14 @@ func (m *MBRL7023) readLine(lineBuffer string) (line, remain string) {
 		if err != nil {
 			panic(err)
 		}
-		if n == 0 {
-			continue
+		select {
+		case <-ctx.Done():
+			_err = ErrTimeout
+			return
+		default:
+			if n == 0 {
+				continue
+			}
 		}
 
 		lineBuffer += strings.Trim(string(buffer), "\x00")
@@ -107,11 +84,15 @@ func (m *MBRL7023) readLine(lineBuffer string) (line, remain string) {
 
 }
 
-func (m *MBRL7023) SetAuthentication(id, password string) error {
+func (m *MBRL7023) SetAuthentication(ctx context.Context, id, password string) error {
 	var line, remain string
+	var err error
 	m.port.Write([]byte(fmt.Sprintf("SKSETPWD C %s\r\n", password)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		println(line)
 		if line == "OK" {
 			break
@@ -124,7 +105,10 @@ func (m *MBRL7023) SetAuthentication(id, password string) error {
 
 	m.port.Write([]byte(fmt.Sprintf("SKSETRBID %s\r\n", id)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		println(line)
 		if line == "OK" {
 			break
@@ -135,37 +119,16 @@ func (m *MBRL7023) SetAuthentication(id, password string) error {
 	return nil
 }
 
-func (m *MBRL7023) parseLine(line string) error {
-	// var err error
-	elems := strings.Split(line, ",")
-	for _, elem := range elems {
-		kv := strings.Split(elem, "=")
-		switch kv[0] {
-		case "ID":
-			m.ID = kv[1]
-		case "VER":
-			m.Version = kv[1]
-		}
-	}
-	return nil
-}
-
-func (m *MBRL7023) readResult() (result string, success bool) {
-	buffer := make([]byte, 1024)
-	result = strings.TrimRight(string(buffer), " \r\n")
-	success = result != "NG"
-	if success {
-		result = strings.TrimPrefix(result, "OK ")
-	}
-	return
-}
-
-func (m *MBRL7023) ChannelScan(scanDurationSec int) (ChannelInfo, error) {
+func (m *MBRL7023) ChannelScan(ctx context.Context, scanDurationSec int) (ChannelInfo, error) {
 	var line, remain string
+	var err error
 	result := map[string]string{}
 	m.port.Write([]byte(fmt.Sprintf("SKSCAN 2 FFFFFFFF %d 0\r\n", scanDurationSec)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return ChannelInfo{}, err
+		}
 		println("line:", line, "remain: ", remain)
 		if strings.HasPrefix(line, "EVENT 22") {
 			break
@@ -178,7 +141,10 @@ func (m *MBRL7023) ChannelScan(scanDurationSec int) (ChannelInfo, error) {
 	fmt.Printf("%#v\n", result)
 	chInfo := ChannelInfo{}
 	chInfo.MACAddress = result["Addr"]
-	chInfo.IPv6Address = m.GetIPv6LinkLocalAddr(result["Addr"])
+	chInfo.IPv6Address, err = m.GetIPv6LinkLocalAddr(ctx, result["Addr"])
+	if err != nil {
+		return ChannelInfo{}, err
+	}
 	v, err := strconv.ParseUint(result["Channel"], 16, 8)
 	if err != nil {
 		return ChannelInfo{}, err
@@ -212,57 +178,77 @@ func (m *MBRL7023) ChannelScan(scanDurationSec int) (ChannelInfo, error) {
 	return chInfo, nil
 }
 
-func (m *MBRL7023) GetIPv6LinkLocalAddr(macAddr string) string {
+func (m *MBRL7023) GetIPv6LinkLocalAddr(ctx context.Context, macAddr string) (string, error) {
 	var line, remain string
+	var err error
 	// result := map[string]string{}
 	m.port.Write([]byte(fmt.Sprintf("SKLL64 %s\r\n", macAddr)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return "", err
+		}
 		if !strings.HasPrefix(line, "SKLL64") {
-			return line
+			return line, nil
 		}
 	}
 }
 
-func (m *MBRL7023) SetChannel(channel uint8) error {
+func (m *MBRL7023) SetChannel(ctx context.Context, channel uint8) error {
 	var line, remain string
+	var err error
 	// result := map[string]string{}
 	m.port.Write([]byte(fmt.Sprintf("SKSREG S2 %02X\r\n", channel)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		if strings.HasPrefix(line, "OK") {
 			return nil
 		}
 	}
 }
 
-func (m *MBRL7023) SetPanID(panID uint16) error {
+func (m *MBRL7023) SetPanID(ctx context.Context, panID uint16) error {
 	var line, remain string
+	var err error
 	// result := map[string]string{}
 	m.port.Write([]byte(fmt.Sprintf("SKSREG S3 %04X\r\n", panID)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		if strings.HasPrefix(line, "OK") {
 			return nil
 		}
 	}
 }
 
-func (m *MBRL7023) ExecutePANAAuth(ipv6Address string) error {
+func (m *MBRL7023) ExecutePANAAuth(ctx context.Context, ipv6Address string) error {
 	var line, remain string
+	var err error
 	m.port.Write([]byte(fmt.Sprintf("SKJOIN %s\r\n", ipv6Address)))
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		if strings.HasPrefix(line, "OK") {
 			return nil
 		}
 	}
 }
 
-func (m *MBRL7023) WaitForPANAAuth() error {
+func (m *MBRL7023) WaitForPANAAuth(ctx context.Context) error {
 	var line, remain string
+	var err error
 	for {
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return err
+		}
 		if strings.HasPrefix(line, "EVENT 24") {
 			return fmt.Errorf("failed to authentication")
 		} else if strings.HasPrefix(line, "EVENT 25") {
@@ -272,14 +258,18 @@ func (m *MBRL7023) WaitForPANAAuth() error {
 	}
 }
 
-func (m *MBRL7023) GetInstantPower(ipv6Addr string) (uint32, error) {
+func (m *MBRL7023) GetInstantPower(ctx context.Context, ipv6Addr string) (uint32, error) {
 	var line, remain string
+	var err error
 	m.port.Write([]byte(fmt.Sprintf("SKSENDTO 1 %s 0E1A 1 0 %04X ", ipv6Addr, len(getInstantPowerBytes))))
 	m.port.Write(getInstantPowerBytes)
 	// m.readLine("") // skip echoback
 	for {
 		println("wait response")
-		line, remain = m.readLine(remain)
+		line, remain, err = m.readLine(ctx, remain)
+		if err != nil {
+			return 0, err
+		}
 		println(line)
 		if strings.Contains(line, "ERXUDP") {
 			// println("erxudp")
@@ -310,21 +300,24 @@ func (m *MBRL7023) GetInstantPower(ipv6Addr string) (uint32, error) {
 			}
 		}
 	}
-	for {
-		line, remain = m.readLine(remain)
-		if strings.HasPrefix("ERXUDP", line) {
-			elements := strings.Split(strings.TrimSpace(line), " ")
-			udpBody := elements[9]
-			seoj := udpBody[8 : 8+6]
-			esv := udpBody[20 : 20+2]
-			if seoj == "028801" && esv == "72" {
-				power, err := strconv.ParseUint(udpBody[len(udpBody)-8-1:], 16, 32)
-				if err != nil {
-					return 0, err
-				}
-				return uint32(power), nil
-			}
-		}
-	}
+	// for {
+	// 	line, remain, err = m.readLine(ctx, remain)
+	// 	if err != nil {
+	// 		return 0, err
+	// 	}
+	// 	if strings.HasPrefix("ERXUDP", line) {
+	// 		elements := strings.Split(strings.TrimSpace(line), " ")
+	// 		udpBody := elements[9]
+	// 		seoj := udpBody[8 : 8+6]
+	// 		esv := udpBody[20 : 20+2]
+	// 		if seoj == "028801" && esv == "72" {
+	// 			power, err := strconv.ParseUint(udpBody[len(udpBody)-8-1:], 16, 32)
+	// 			if err != nil {
+	// 				return 0, err
+	// 			}
+	// 			return uint32(power), nil
+	// 		}
+	// 	}
+	// }
 
 }
